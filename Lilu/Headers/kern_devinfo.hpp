@@ -50,6 +50,11 @@ class DeviceInfo {
 	 */
 	bool checkForAndSetAMDiGPU(IORegistryEntry *obj);
 
+	/**
+	 *  Handle known Renoir audio functions before generic GPU/audio pairing.
+	 */
+	bool checkRenoirAudio(IORegistryEntry *obj, uint32_t vendor);
+
 public:
 	/**
 	 *  Obtains autodetected legacy framebuffer if applicable
@@ -392,9 +397,9 @@ class BaseDeviceInfo {
 	void updateFirmwareVendor();
 
 	/**
-	 *  Updates model information
+	 *  Updates model information and returns whether both identifiers are available.
 	 */
-	void updateModelInfo();
+	bool updateModelInfo();
 public:
 	/**
 	 *  Board identifier board-id (VMware has "440BX Desktop Reference Platform", eek)

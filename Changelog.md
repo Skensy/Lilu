@@ -1,5 +1,9 @@
 Lilu Changelog
 ==============
+#### v1.7.4 (local)
+- Distinguish Renoir analog and display audio controllers during PCI discovery
+- Bound EFI and legacy model identifier reads and limit the wait for missing identifiers to five seconds
+
 #### v1.7.3
 - Added Tiger Lake H CPU model, thanks @Elezorn
 

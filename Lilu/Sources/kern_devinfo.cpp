@@ -8,6 +8,7 @@
 #include <Headers/kern_devinfo.hpp>
 #include <Headers/kern_iokit.hpp>
 #include <Headers/kern_cpu.hpp>
+#include <Headers/kern_time.hpp>
 #include <IOKit/IODeviceTreeSupport.h>
 
 BaseDeviceInfo globalBaseDeviceInfo;
@@ -206,6 +207,27 @@ bool DeviceInfo::checkForAndSetAMDiGPU(IORegistryEntry *obj) {
 	}
 }
 
+bool DeviceInfo::checkRenoirAudio(IORegistryEntry *obj, uint32_t vendor) {
+	if (vendor != WIOKit::VendorID::AMDZEN && vendor != WIOKit::VendorID::ATIAMD)
+		return false;
+
+	uint32_t device = 0;
+	if (!WIOKit::getOSDataValue(obj, "device-id", device))
+		return false;
+
+	// AppleALC expects an Intel controller in audioBuiltinDigital.
+	if (vendor == WIOKit::VendorID::ATIAMD && device == 0x1637)
+		return true;
+
+	if (vendor == WIOKit::VendorID::AMDZEN && device == 0x15E3) {
+		if (!audioBuiltinAnalog && !obj->getProperty("external-audio"))
+			audioBuiltinAnalog = obj;
+		return true;
+	}
+
+	return false;
+}
+
 void DeviceInfo::grabDevicesFromPciRoot(IORegistryEntry *pciRoot) {
 	awaitPublishing(pciRoot);
 
@@ -234,6 +256,8 @@ void DeviceInfo::grabDevicesFromPciRoot(IORegistryEntry *pciRoot) {
 			} else if (vendor == WIOKit::VendorID::ATIAMD && (code == WIOKit::ClassCode::DisplayController || code == WIOKit::ClassCode::VGAController)) {
 				checkForAndSetAMDiGPU(obj);
 			} else if (code == WIOKit::ClassCode::HDADevice || code == WIOKit::ClassCode::HDAMmDevice) {
+				if (checkRenoirAudio(obj, vendor))
+					continue;
 				if (vendor == WIOKit::VendorID::Intel && name && (!strcmp(name, "HDAU") || !strcmp(name, "B0D3"))) {
 					DBGLOG("dev", "found HDAU device %s", safeString(name));
 					audioBuiltinDigital = obj;
@@ -284,7 +308,8 @@ void DeviceInfo::grabDevicesFromPciRoot(IORegistryEntry *pciRoot) {
 							} else if (pcicode == WIOKit::ClassCode::HDADevice || pcicode == WIOKit::ClassCode::HDAMmDevice) {
 								DBGLOG("dev", "found audio device %s at %s by %04X",
 									   safeString(pciobj->getName()), safeString(name), pcivendor);
-								v.audio = pciobj;
+								if (!checkRenoirAudio(pciobj, pcivendor) || pciobj->getProperty("external-audio"))
+									v.audio = pciobj;
 							}
 						}
 					}
@@ -541,7 +566,29 @@ void BaseDeviceInfo::updateFirmwareVendor() {
 	}
 }
 
-void BaseDeviceInfo::updateModelInfo() {
+template <typename Char, size_t N>
+static void readIdentifier(IORegistryEntry *entry, const char *key, char (&identifier)[N]) {
+	auto property = entry->copyProperty(key);
+	if (!property)
+		return;
+
+	if (auto data = OSDynamicCast(OSData, property)) {
+		auto bytes = static_cast<const uint8_t *>(data->getBytesNoCopy());
+		size_t count = data->getLength() / sizeof(Char);
+		size_t i = 0;
+		while (bytes && i < count && i < N - 1) {
+			Char ch;
+			memcpy(&ch, bytes + i * sizeof(Char), sizeof(Char));
+			if (!ch)
+				break;
+			identifier[i++] = static_cast<char>(ch);
+		}
+		identifier[i] = '\0';
+	}
+	property->release();
+}
+
+bool BaseDeviceInfo::updateModelInfo() {
 	auto entry = IORegistryEntry::fromPath("/efi/platform", gIODTPlane);
 	if (entry) {
 		if (entry->getProperty("BEMB")) {
@@ -556,25 +603,13 @@ void BaseDeviceInfo::updateModelInfo() {
 			// - "REV" key before it is deleted by VirtualSMC (only if we decided to update DataHub)
 		}
 
-		auto data = OSDynamicCast(OSData, entry->getProperty("Model"));
-		size_t dataSize = data ? data->getLength() : 0;
-		if (dataSize > 0) {
-			auto bytes = static_cast<const char16_t *>(data->getBytesNoCopy());
-			size_t i = 0;
-			while (bytes[i] != '\0' && i < sizeof(modelIdentifier) - 1 && i < dataSize) {
-				modelIdentifier[i] = static_cast<char>(bytes[i]);
-				i++;
-			}
-		}
-
+		readIdentifier<char16_t>(entry, "Model", modelIdentifier);
 		if (modelIdentifier[0] != '\0')
 			DBGLOG("dev", "got %s model from /efi/platform", modelIdentifier);
 		else
 			DBGLOG("dev", "failed to get valid model from /efi/platform");
 
-		data = OSDynamicCast(OSData, entry->getProperty("board-id"));
-		if (data && data->getLength() > 0)
-			lilu_strlcpy(boardIdentifier, static_cast<const char *>(data->getBytesNoCopy()), sizeof(boardIdentifier));
+		readIdentifier<char>(entry, "board-id", boardIdentifier);
 
 		if (boardIdentifier[0] != '\0')
 			DBGLOG("dev", "got %s board-id from /efi/platform", boardIdentifier);
@@ -587,55 +622,29 @@ void BaseDeviceInfo::updateModelInfo() {
 	}
 
 	// Try the legacy approach for old MacEFI and VMware.
-	while (modelIdentifier[0] == '\0' || boardIdentifier[0] == '\0') {
-		auto entry = IORegistryEntry::fromPath("/", gIODTPlane);
-		if (entry) {
-			bool modelReady = false;
-
-			if (boardIdentifier[0] == '\0') {
-				auto data = OSDynamicCast(OSData, entry->getProperty("board-id"));
-				if (data && data->getLength() > 0)
-					lilu_strlcpy(boardIdentifier, static_cast<const char *>(data->getBytesNoCopy()), sizeof(boardIdentifier));
-
-				if (boardIdentifier[0] != '\0') {
-					DBGLOG("dev", "got %s board-id from /", boardIdentifier);
-					// Otherwise we will get ACPI model.
-					modelReady = true;
-				} else {
-					DBGLOG("dev", "failed to get valid board-id from /");
-				}
-			} else {
-				modelReady = true;
-			}
-
-			if (modelReady && modelIdentifier[0] == '\0') {
-				auto data = OSDynamicCast(OSData, entry->getProperty("model"));
-				if (data && data->getLength() > 0)
-					lilu_strlcpy(modelIdentifier, static_cast<const char *>(data->getBytesNoCopy()), sizeof(modelIdentifier));
-
-				if (modelIdentifier[0] != '\0')
-					DBGLOG("dev", "got %s model from /", modelIdentifier);
-				else
-					DBGLOG("dev", "failed to get valid model from /");
-			}
-
-
-
-			entry->release();
-		} else {
-			SYSLOG("dev", "failed to get DT root");
+	auto start = getCurrentTimeNs();
+	while (!modelIdentifier[0] || !boardIdentifier[0]) {
+		auto root = IORegistryEntry::fromPath("/", gIODTPlane);
+		if (root) {
+			if (!boardIdentifier[0])
+				readIdentifier<char>(root, "board-id", boardIdentifier);
+			// Before board-id is published, the root can still contain the ACPI model.
+			if (boardIdentifier[0] && !modelIdentifier[0])
+				readIdentifier<char>(root, "model", modelIdentifier);
+			root->release();
 		}
-
-		if (modelIdentifier[0] == '\0' || boardIdentifier[0] == '\0') {
-			SYSLOG("dev", "failed to obtain model information, retrying...");
-			IOSleep(1);
-		}
+		if ((modelIdentifier[0] && boardIdentifier[0]) || getTimeSinceNs(start) >= convertScToNs(5))
+			break;
+		IOSleep(1);
 	}
 
-	if (strstr(modelIdentifier, "Book", strlen("Book")))
-		modelType = WIOKit::ComputerModel::ComputerLaptop;
-	else
-		modelType = WIOKit::ComputerModel::ComputerDesktop;
+	if (modelIdentifier[0]) {
+		if (strstr(modelIdentifier, "Book", strlen("Book")))
+			modelType = WIOKit::ComputerModel::ComputerLaptop;
+		else
+			modelType = WIOKit::ComputerModel::ComputerDesktop;
+	}
+	return modelIdentifier[0] && boardIdentifier[0];
 }
 
 const BaseDeviceInfo &BaseDeviceInfo::get() {
@@ -647,6 +656,8 @@ void BaseDeviceInfo::init() {
 	CPUInfo::init();
 
 	globalBaseDeviceInfo.updateFirmwareVendor();
-	globalBaseDeviceInfo.updateModelInfo();
+	if (!globalBaseDeviceInfo.updateModelInfo())
+		SYSLOG("dev", "model lookup timed out (model: %s, board-id: %s), continuing",
+		       globalBaseDeviceInfo.modelIdentifier, globalBaseDeviceInfo.boardIdentifier);
 }
 
