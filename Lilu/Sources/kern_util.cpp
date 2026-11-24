@@ -55,17 +55,15 @@ const char *strstr(const char *stack, const char *needle, size_t len) {
 		if (len == 0) return stack;
 	}
 
-	const char *i = needle;
+	for (; *stack; ++stack) {
+		if (*stack != *needle)
+			continue;
 
-	while (*stack) {
-		if (*stack == *i) {
-			i++;
-			if (static_cast<size_t>(i - needle) == len)
-				return stack - len + 1;
-		} else {
-			i = needle;
-		}
-		stack++;
+		size_t i = 1;
+		while (i < len && stack[i] && stack[i] == needle[i])
+			++i;
+		if (i == len)
+			return stack;
 	}
 
 	return nullptr;

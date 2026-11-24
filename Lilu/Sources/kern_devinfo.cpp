@@ -41,9 +41,9 @@ void DeviceInfo::updateFramebufferId() {
 	} else if (WIOKit::getOSDataValue(videoBuiltin, reportedFramebufferName, reportedFramebufferId)) {
 		DBGLOG("dev", "found property frame id override to %u", reportedFramebufferId);
 	} else {
-		auto legacy = getLegacyFramebufferId();
-		if (gen == CPUInfo::CpuGeneration::SandyBridge && legacy != DefaultVesaPlatformId) {
-			reportedFramebufferId = getLegacyFramebufferId();
+		auto legacy = gen == CPUInfo::CpuGeneration::SandyBridge ? getLegacyFramebufferId() : DefaultVesaPlatformId;
+		if (legacy != DefaultVesaPlatformId) {
+			reportedFramebufferId = legacy;
 		} else {
 			if (!requestedExternalSwitchOff && videoExternal.size() > 0 && gen != CPUInfo::CpuGeneration::Broadwell &&
 				gen != CPUInfo::CpuGeneration::CannonLake && gen != CPUInfo::CpuGeneration::IceLake) {
@@ -229,8 +229,6 @@ bool DeviceInfo::checkRenoirAudio(IORegistryEntry *obj, uint32_t vendor) {
 }
 
 void DeviceInfo::grabDevicesFromPciRoot(IORegistryEntry *pciRoot) {
-	awaitPublishing(pciRoot);
-
 	auto iterator = pciRoot->getChildIterator(gIODTPlane);
 	if (iterator) {
 		IORegistryEntry *obj = nullptr;
@@ -351,6 +349,18 @@ DeviceInfo *DeviceInfo::createCached() {
 	return globalDeviceInfo;
 }
 
+static bool waitForPciRoot(IORegistryEntry *root) {
+	const auto start = getCurrentTimeNs();
+	while (root->getProperty("IOPCIConfigured") != kOSBooleanTrue) {
+		if (getTimeSinceNs(start) >= convertScToNs(5)) {
+			SYSLOG("dev", "skipping unconfigured PCI root %s", safeString(root->getName()));
+			return false;
+		}
+		IOSleep(1);
+	}
+	return true;
+}
+
 DeviceInfo *DeviceInfo::create() {
 	if (globalDeviceInfo != nullptr)
 		return globalDeviceInfo;
@@ -388,13 +398,8 @@ DeviceInfo *DeviceInfo::create() {
 				if (isPciRoot) {
 					DBGLOG("dev", "found PCI root %s", safeString(pciRootObj->getName()));
 
-					// PCI is strictly not guaranteed to be ready at this time, check it just in case.
-					while (OSDynamicCast(OSBoolean, pciRootObj->getProperty("IOPCIConfigured")) != kOSBooleanTrue) {
-						DBGLOG("dev", "waiting on PCI root %s configuration", safeString(pciRootObj->getName()));
-						IOSleep(1);
-					}
-
-					list->grabDevicesFromPciRoot(pciRootObj);
+					if (waitForPciRoot(pciRootObj))
+						list->grabDevicesFromPciRoot(pciRootObj);
 				}
 			}
 

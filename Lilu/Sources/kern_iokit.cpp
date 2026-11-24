@@ -23,6 +23,10 @@ namespace WIOKit {
 		auto value = entry->getProperty(property);
 		if (value) {
 			auto s = OSSerialize::withCapacity(PAGE_SIZE);
+			if (!s) {
+				SYSLOG("iokit", "failed to allocate serializer for %s", property);
+				return nullptr;
+			}
 			if (value->serialize(s)) {
 				return s;
 			} else {
@@ -169,6 +173,7 @@ namespace WIOKit {
 		bool found {false};
 		IORegistryEntry *res {nullptr};
 
+		const size_t len = strlen(prefix);
 		size_t bruteCount {0};
 
 		do {
@@ -176,19 +181,15 @@ namespace WIOKit {
 			auto iterator = entry->getChildIterator(plane);
 
 			if (iterator) {
-				size_t len = strlen(prefix);
 				while ((res = OSDynamicCast(IORegistryEntry, iterator->getNextObject())) != nullptr) {
 					const char *resname = res->getName();
 
-					if (resname && !strncmp(prefix, resname, len)) {
-						found = proc ? proc(user, res) : true;
-						if (found) {
-							if (bruteCount > 1)
-								DBGLOG("iokit", "bruted %s value in %lu attempts", prefix, bruteCount);
-							if (!proc) {
-								break;
-							}
-						}
+					if (resname && !strncmp(prefix, resname, len) && (!proc || proc(user, res))) {
+						found = true;
+						if (bruteCount > 1)
+							DBGLOG("iokit", "bruted %s value in %lu attempts", prefix, bruteCount);
+						if (!proc)
+							break;
 					}
 				}
 

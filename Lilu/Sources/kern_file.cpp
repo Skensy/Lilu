@@ -68,13 +68,15 @@ int FileIO::writeBufferToFile(const char *path, void *buffer, size_t size, int f
 	errno_t err = vnode_open(path, fmode, cmode, VNODE_LOOKUP_NOFOLLOW, &vnode, ctxt);
 	if (!err) {
 		err = writeFileData(buffer, 0, size, vnode, ctxt);
-		if (!err) {
-			err = vnode_close(vnode, FWASWRITTEN, ctxt);
-			if (err)
-				SYSLOG("file", "vnode_close(%s) failed with error %d!", path, err);
-		} else {
+		if (err)
 			SYSLOG("file", "failed to write %s file of %lu size", path, size);
-		}
+
+		int closeFlags = (fmode & (FREAD | FWRITE)) | (err ? 0 : FWASWRITTEN);
+		auto closeErr = vnode_close(vnode, closeFlags, ctxt);
+		if (closeErr)
+			SYSLOG("file", "vnode_close(%s) failed with error %d!", path, closeErr);
+		if (!err)
+			err = closeErr;
 	} else {
 		SYSLOG("file", "failed to create file %s with error %d", path, err);
 	}
@@ -99,22 +101,16 @@ int FileIO::performFileIO(void *buffer, off_t off, size_t size, vnode_t vnode, v
 	int error = uio_addiov(uio, CAST_USER_ADDR_T(buffer), size);
 	if (error) {
 		SYSLOG("file", "uio_addiov returned error %d!", error);
-		return error;
+	} else {
+		error = write ? VNOP_WRITE(vnode, uio, 0, ctxt) : VNOP_READ(vnode, uio, 0, ctxt);
+		if (error) {
+			SYSLOG("file", "%s failed %d!", write ? "VNOP_WRITE" : "VNOP_READ", error);
+		} else if (uio_resid(uio)) {
+			SYSLOG("file", "uio_resid returned non-null!");
+			error = EINVAL;
+		}
 	}
 
-	if (write)
-		error = VNOP_WRITE(vnode, uio, 0, ctxt);
-	else
-		error = VNOP_READ(vnode, uio, 0, ctxt);
-	if (error) {
-		SYSLOG("file", "%s failed %d!", write ? "VNOP_WRITE" : "VNOP_READ", error);
-		return error;
-	}
-
-	if (uio_resid(uio)) {
-		SYSLOG("file", "uio_resid returned non-null!");
-		return EINVAL;
-	}
-
-	return 0;
+	uio_free(uio);
+	return error;
 }

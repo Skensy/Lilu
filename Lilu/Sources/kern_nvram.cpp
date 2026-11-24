@@ -77,7 +77,8 @@ uint8_t *NVStorage::read(const char *key, uint32_t &size, uint8_t opts, const ui
 		};
 
 		auto hdr = static_cast<const Header *>(data->getBytesNoCopy());
-		if (hdr->magic != Header::Magic || hdr->version > Header::MaxVer || (hdr->opts & opts) != opts) {
+		const auto requiredOpts = opts & ~OptSensitive;
+		if (hdr->magic != Header::Magic || hdr->version > Header::MaxVer || (hdr->opts & requiredOpts) != requiredOpts) {
 			SYSLOG("nvram", "read %s contains invalid header (%X, %u, %X vs %X, %u, %X)",
 						 key, hdr->magic, hdr->version, hdr->opts, Header::Magic, Header::MaxVer, opts);
 			return nullptr;

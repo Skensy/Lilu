@@ -9,6 +9,9 @@
 #include <Headers/kern_mach.hpp>
 
 bool RTCStorage::init(bool wait) {
+	if (rtcSrv)
+		return true;
+
 	auto matching = IOService::serviceMatching("AppleRTC");
 	if (matching) {
 		if (wait) {
@@ -24,6 +27,8 @@ bool RTCStorage::init(bool wait) {
 			auto rtcIterator = IOService::getMatchingServices(matching);
 			if (rtcIterator) {
 				rtcSrv = OSDynamicCast(IOService, rtcIterator->getNextObject());
+				if (rtcSrv)
+					rtcSrv->retain();
 				rtcIterator->release();
 			}
 			matching->release();
